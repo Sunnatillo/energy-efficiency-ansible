@@ -1,0 +1,64 @@
+- hosts: localhost
+  vars:
+    power_dir: /home/$USER/platform-aware-scheduling/telemetry-aware-scheduling/docs/power
+
+  tasks:
+    - name: Clone descheduler repository
+      ansible.builtin.git:
+        repo: https://github.com/Sunnatillo/descheduler.git
+        dest: /home/$USER/descheduler
+        clone: yes
+        update: yes
+        version: energy-efficiency
+
+    - name: Deploy descheduler deployments 
+      shell: |
+        cd /home/$USER/descheduler/
+        kubectl create -f kubernetes/base/rbac.yaml
+        kubectl create -f kubernetes/base/configmap.yaml
+        kubectl create -f kubernetes/deployment/deployment.yaml
+
+    - name: Deploy collectd 
+      shell: |
+        cd  {{ power_dir }}
+        kubectl apply -f collectd/daemonset.yaml
+        kubectl apply -f collectd/configmap.yaml 
+        kubectl apply -f collectd/service.yaml
+
+    - name: wait for collectd pods to come up
+      shell: kubectl get pods -nmonitoring -lapp.kubernetes.io/name=collectd -o json
+      register: collectd_pods
+      retries: 20
+      delay: 10
+      until: collectd_pods.stdout|from_json|json_query('items[*].status.phase')|unique == ["Running"]
+
+    - name: Install kube state metrics
+      shell: |
+        helm install "master-kube-state-metrics" {{ power_dir }}/kube-state-metrics
+    
+    - name: Wait for kube-state-metrics  pods to come up
+      shell: kubectl get pods -l app.kubernetes.io/name=kube-state-metrics -o json
+      register: kube_state_metrics_pods
+      retries: 20
+      delay: 10
+      until: kube_state_metrics_pods.stdout|from_json|json_query('items[*].status.phase')|unique == ["Running"]
+    
+    - name: Configure Prometheus and the Prometheus adapter
+      shell: |
+        cd {{ power_dir }}
+        kubectl apply -f prometheus/prometheus-config.yaml
+        kubectl delete pods -nmonitoring -lapp=prometheus-server
+        kubectl apply -f prometheus/custom-metrics-config.yml
+        kubectl delete pods -n custom-metrics -lapp=custom-metrics-apiserver
+
+    - name: Apply taspolicy and Power Sensitive Application  
+      shell: |
+        cd {{ power_dir }}
+        kubectl apply -f tas-policy.yaml
+        
+    - name: Wait for all  pods to come up
+      shell: kubectl get pods -A -o json
+      register: all_pods
+      retries: 20
+      delay: 10
+      until: all_pods.stdout|from_json|json_query('items[*].status.phase')|unique == ["Running"]
