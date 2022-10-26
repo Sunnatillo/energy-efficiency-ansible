@@ -1,0 +1,41 @@
+- hosts: localhost
+  
+  tasks:
+  - name: Clone repository
+    ansible.builtin.git:
+      repo: https://github.com/Sunnatillo/platform-aware-scheduling.git
+      dest: /home/$USER/ongoing/platform-aware-scheduling
+      clone: yes
+      update: yes
+      version: energy-efficiency
+
+  - name: Create monitoring namespace on Kubernetes
+    kubernetes.core.k8s:
+      name: "monitoring"
+      kind: Namespace
+      state: present
+  
+  - name: Install  node-exporter and prometheus
+    shell: |
+      helm install node-exporter /home/$USER/platform-aware-scheduling/telemetry-aware-scheduling/deploy/charts/prometheus_node_exporter_helm_chart/
+      helm install prometheus /home/$USER/platform-aware-scheduling/telemetry-aware-scheduling/deploy/charts/prometheus_helm_chart/
+
+  - name: Generate cert and key for custom metrics adapter
+    shell: |
+      mkdir /home/$USER/certs/
+      cd /home/$USER/certs/
+      export PURPOSE=serving
+      openssl req -x509 -sha256 -new -nodes -days 365 -newkey rsa:2048 -keyout ${PURPOSE}-ca.key -out ${PURPOSE}-ca.crt -subj "/CN=ca"
+      echo '{"signing":{"default":{"expiry":"43800h","usages":["signing","key encipherment","'${PURPOSE}'"]}}}' > "${PURPOSE}-ca-config.json"
+
+  - name: Deploy prometheus adapter
+    shell: |-
+      kubectl create namespace custom-metrics
+      kubectl -n custom-metrics create secret tls cm-adapter-serving-certs --cert=/home/$USER/certs/serving-ca.crt --key=/home/$USER/certs/serving-ca.key
+      helm install prometheus-adapter /home/$USER/platform-aware-scheduling/telemetry-aware-scheduling/deploy/charts/prometheus_custom_metrics_helm_chart/
+
+  - name: Run extender configuration script
+    shell: |
+      ./home/$USER/platform-aware-scheduling/telemetry-aware-scheduling/deploy/extender-configuration/configure-scheduler.sh
+    become: true      
+
